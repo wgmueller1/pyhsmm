@@ -494,20 +494,19 @@ class _HMMGibbsSampling(_HMMBase,ModelGibbsSampling):
 
 
 class _HMMMeanField(_HMMBase,ModelMeanField):
-    def meanfield_coordinate_descent_step(self,num_procs=0):
-        self._meanfield_update_sweep(num_procs=num_procs)
-        return self._vlb()
-
-    def _meanfield_update_sweep(self,num_procs=0):
-        # NOTE: we want to update the states factor last to make the VLB
+    def meanfield_coordinate_descent_step(self,compute_vlb=True,num_procs=0):
+        # we want to update the states factor last to make the VLB
         # computation efficient, but to update the parameters first we have to
         # ensure everything in states_list has expected statistics computed
         self._meanfield_update_states_list(
-            [s for s in self.states_list if not hasattr(s,'expected_states')],
+            [s for s in self.states_list if not hasattr(s, 'expected_states')],
             num_procs)
 
         self.meanfield_update_parameters()
         self.meanfield_update_states(num_procs)
+
+        if compute_vlb:
+            return self.vlb(states_last_updated=True)
 
     def meanfield_update_parameters(self):
         self.meanfield_update_obs_distns()
@@ -516,16 +515,20 @@ class _HMMMeanField(_HMMBase,ModelMeanField):
 
     def meanfield_update_obs_distns(self):
         for state, o in enumerate(self.obs_distns):
-            o.meanfieldupdate([s.data for s in self.states_list],
-                    [s.expected_states[:,state] for s in self.states_list])
+            o.meanfieldupdate(
+                [s.data for s in self.states_list],
+                [s.expected_states[:,state] for s in self.states_list])
+        self._clear_caches()
 
     def meanfield_update_trans_distn(self):
         self.trans_distn.meanfieldupdate(
-                [s.expected_transcounts for s in self.states_list])
+            [s.expected_transcounts for s in self.states_list])
+        self._clear_caches()
 
     def meanfield_update_init_state_distn(self):
         self.init_state_distn.meanfieldupdate(
-                [s.expected_states[0] for s in self.states_list])
+            [s.expected_states[0] for s in self.states_list])
+        self._clear_caches()
 
     def meanfield_update_states(self,num_procs=0):
         self._meanfield_update_states_list(self.states_list,num_procs=num_procs)
@@ -537,15 +540,15 @@ class _HMMMeanField(_HMMBase,ModelMeanField):
         else:
             self._joblib_meanfield_update_states(states_list,num_procs)
 
-    def _vlb(self):
+    def vlb(self, states_last_updated=False):
         vlb = 0.
-        vlb += sum(s.get_vlb() for s in self.states_list)
+        vlb += sum(s.get_vlb(states_last_updated) for s in self.states_list)
         vlb += self.trans_distn.get_vlb()
         vlb += self.init_state_distn.get_vlb()
         vlb += sum(o.get_vlb() for o in self.obs_distns)
         return vlb
 
-    ### joblib parallel stuff here
+    ### joblib parallel stuff
 
     def _joblib_meanfield_update_states(self,states_list,num_procs):
         if len(states_list) > 0:
@@ -574,7 +577,7 @@ class _HMMMeanField(_HMMBase,ModelMeanField):
 class _HMMSVI(_HMMBase,ModelMeanFieldSVI):
     # NOTE: classes with this mixin should also have the _HMMMeanField mixin for
     # joblib/multiprocessing stuff to work
-    def meanfield_sgdstep(self,minibatch,minibatchfrac,stepsize,num_procs=0,**kwargs):
+    def meanfield_sgdstep(self,minibatch,prob,stepsize,num_procs=0,**kwargs):
         ## compute the local mean field step for the minibatch
         mb_states_list = self._get_mb_states_list(minibatch,**kwargs)
         if num_procs == 0:
@@ -584,7 +587,7 @@ class _HMMSVI(_HMMBase,ModelMeanFieldSVI):
             self._joblib_meanfield_update_states(mb_states_list,num_procs)
 
         ## take a global step on the parameters
-        self._meanfield_sgdstep_parameters(mb_states_list,minibatchfrac,stepsize)
+        self._meanfield_sgdstep_parameters(mb_states_list,prob,stepsize)
 
     def _get_mb_states_list(self,minibatch,**kwargs):
         minibatch = minibatch if isinstance(minibatch,list) else [minibatch]
@@ -594,27 +597,27 @@ class _HMMSVI(_HMMBase,ModelMeanFieldSVI):
             mb_states_list.append(self.states_list.pop())
         return mb_states_list
 
-    def _meanfield_sgdstep_parameters(self,mb_states_list,minibatchfrac,stepsize):
-        self._meanfield_sgdstep_obs_distns(mb_states_list,minibatchfrac,stepsize)
-        self._meanfield_sgdstep_trans_distn(mb_states_list,minibatchfrac,stepsize)
-        self._meanfield_sgdstep_init_state_distn(mb_states_list,minibatchfrac,stepsize)
+    def _meanfield_sgdstep_parameters(self,mb_states_list,prob,stepsize):
+        self._meanfield_sgdstep_obs_distns(mb_states_list,prob,stepsize)
+        self._meanfield_sgdstep_trans_distn(mb_states_list,prob,stepsize)
+        self._meanfield_sgdstep_init_state_distn(mb_states_list,prob,stepsize)
 
-    def _meanfield_sgdstep_obs_distns(self,mb_states_list,minibatchfrac,stepsize):
+    def _meanfield_sgdstep_obs_distns(self,mb_states_list,prob,stepsize):
         for state, o in enumerate(self.obs_distns):
             o.meanfield_sgdstep(
                     [s.data for s in mb_states_list],
                     [s.expected_states[:,state] for s in mb_states_list],
-                    minibatchfrac,stepsize)
+                    prob,stepsize)
 
-    def _meanfield_sgdstep_trans_distn(self,mb_states_list,minibatchfrac,stepsize):
+    def _meanfield_sgdstep_trans_distn(self,mb_states_list,prob,stepsize):
         self.trans_distn.meanfield_sgdstep(
                 [s.expected_transcounts for s in mb_states_list],
-                minibatchfrac,stepsize)
+                prob,stepsize)
 
-    def _meanfield_sgdstep_init_state_distn(self,mb_states_list,minibatchfrac,stepsize):
+    def _meanfield_sgdstep_init_state_distn(self,mb_states_list,prob,stepsize):
         self.init_state_distn.meanfield_sgdstep(
                 [s.expected_states[0] for s in mb_states_list],
-                minibatchfrac,stepsize)
+                prob,stepsize)
 
 
 class _HMMEM(_HMMBase,ModelEM):
@@ -977,24 +980,24 @@ class _HSMMMeanField(_HSMMBase,_HMMMeanField):
                         for s in self.states_list],
                     [s.expected_durations[state] for s in self.states_list])
 
-    def _vlb(self):
-        vlb = super(_HSMMMeanField,self)._vlb()
+    def vlb(self):
+        vlb = super(_HSMMMeanField,self).vlb()
         vlb += sum(d.get_vlb() for d in self.dur_distns)
         return vlb
 
 
 class _HSMMSVI(_HSMMBase,_HMMSVI):
-    def _meanfield_sgdstep_parameters(self,mb_states_list,minibatchfrac,stepsize):
-        super(_HSMMSVI,self)._meanfield_sgdstep_parameters(mb_states_list,minibatchfrac,stepsize)
-        self._meanfield_sgdstep_dur_distns(mb_states_list,minibatchfrac,stepsize)
+    def _meanfield_sgdstep_parameters(self,mb_states_list,prob,stepsize):
+        super(_HSMMSVI,self)._meanfield_sgdstep_parameters(mb_states_list,prob,stepsize)
+        self._meanfield_sgdstep_dur_distns(mb_states_list,prob,stepsize)
 
-    def _meanfield_sgdstep_dur_distns(self,mb_states_list,minibatchfrac,stepsize):
+    def _meanfield_sgdstep_dur_distns(self,mb_states_list,prob,stepsize):
         for state, d in enumerate(self.dur_distns):
             d.meanfield_sgdstep(
                     [np.arange(1,s.expected_durations[state].shape[0]+1)
                         for s in mb_states_list],
                     [s.expected_durations[state] for s in mb_states_list],
-                    minibatchfrac,stepsize)
+                    prob,stepsize)
 
 
 class _HSMMINBEMMixin(_HMMEM,ModelEM):
@@ -1218,6 +1221,11 @@ class _SeparateTransMixin(object):
                 lambda: copy.deepcopy(self.trans_distn))
         self.init_state_distns = collections.defaultdict(
                 lambda: copy.deepcopy(self.init_state_distn))
+        self._trans_distn_prototype = self.trans_distn
+        del self.trans_distn
+
+        self._init_state_distn_prototype = self.init_state_distn
+        del self.init_state_distn
 
     def __getstate__(self):
         dct = self.__dict__.copy()
@@ -1228,9 +1236,9 @@ class _SeparateTransMixin(object):
     def __setstate__(self,dct):
         self.__dict__.update(dct)
         self.trans_distns = collections.defaultdict(
-                lambda: copy.deepcopy(self.trans_distn))
+                lambda: copy.deepcopy(self._trans_distn_prototype))
         self.init_state_distns = collections.defaultdict(
-                lambda: copy.deepcopy(self.init_state_distn))
+                lambda: copy.deepcopy(self.init_state_distn_prototype))
         self.trans_distns.update(dct['trans_distns'])
         self.init_state_distns.update(dct['init_state_distns'])
 
@@ -1285,19 +1293,19 @@ class _SeparateTransMixin(object):
 
     ### SVI
 
-    def _meanfield_sgdstep_trans_distn(self,mb_states_list,minibatchfrac,stepsize):
+    def _meanfield_sgdstep_trans_distn(self,mb_states_list,prob,stepsize):
         for group_id, trans_distn in self.trans_distns.iteritems():
             trans_distn.meanfield_sgdstep(
                     [s.expected_transcounts for s in mb_states_list
                         if hash(s.group_id) == hash(group_id)],
-                    minibatchfrac,stepsize)
+                    prob,stepsize)
 
-    def _meanfield_sgdstep_init_state_distn(self,mb_states_list,minibatchfrac,stepsize):
+    def _meanfield_sgdstep_init_state_distn(self,mb_states_list,prob,stepsize):
         for group_id, init_state_distn in self.init_state_distns.iteritems():
             init_state_distn.meanfield_sgdstep(
                     [s.expected_states[0] for s in mb_states_list
                         if hash(s.group_id) == hash(group_id)],
-                    minibatchfrac,stepsize)
+                    prob,stepsize)
 
     ### EM
 

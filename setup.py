@@ -4,7 +4,7 @@ import sys
 import os
 from glob import glob
 
-PYHSMM_VERSION = "0.1.3"
+PYHSMM_VERSION = "0.1.4"
 
 ###########################
 #  compilation arguments  #
@@ -81,6 +81,7 @@ setup(name='pyhsmm',
       maintainer='Matthew James Johnson',
       maintainer_email='mattjj@csail.mit.edu',
       url="https://github.com/mattjj/pyhsmm",
+      license='MIT',
       packages=['pyhsmm',
                 'pyhsmm.basic',
                 'pyhsmm.internals',
@@ -95,7 +96,7 @@ setup(name='pyhsmm',
           "scipy",
           "matplotlib",
           "nose",
-          "pybasicbayes",
+          "pybasicbayes >= 0.1.3",
       ],
       package_data={"pyhsmm": [os.path.join("examples", "*.txt")]},
       ext_modules=ext_modules,
@@ -105,4 +106,3 @@ setup(name='pyhsmm',
           'Programming Language :: Python',
           'Programming Language :: C++',
       ])
-

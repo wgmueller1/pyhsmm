@@ -7,9 +7,9 @@ from scipy.misc import logsumexp
 
 from pyhsmm.util.stats import sample_discrete
 try:
-    from pyhsmm.util.cstats import sample_markov
+    from pyhsmm.util.cstats import sample_markov, count_transitions
 except ImportError:
-    from pyhsmm.util.stats import sample_markov
+    from pyhsmm.util.stats import sample_markov, count_transitions
 from pyhsmm.util.general import rle
 
 ######################
@@ -234,7 +234,7 @@ class HMMStatesPython(_StatesBase):
 
     def log_likelihood(self):
         if self._normalizer is None:
-            self.messages_forwards_normalized() # NOTE: sets self._normalizer
+            self.messages_forwards_normalized()  # NOTE: sets self._normalizer
         return self._normalizer
 
     def _messages_log(self,trans_matrix,init_state_distn,log_likelihoods):
@@ -433,7 +433,6 @@ class HMMStatesPython(_StatesBase):
     @property
     def mf_trans_matrix(self):
         return self.model.trans_distn.exp_expected_log_trans_matrix
-        # return np.maximum(self.model.trans_distn.exp_expected_log_trans_matrix,1e-5)
 
     @property
     def mf_pi_0(self):
@@ -451,12 +450,45 @@ class HMMStatesPython(_StatesBase):
     def meanfieldupdate(self):
         self.clear_caches()
         self.all_expected_stats = self._expected_statistics(
-                self.mf_trans_matrix,self.mf_pi_0,self.mf_aBl)
+            self.mf_trans_matrix,self.mf_pi_0,self.mf_aBl)
+        self._mf_param_snapshot = (
+            np.log(self.mf_trans_matrix), np.log(self.mf_pi_0),
+            self.mf_aBl, self._normalizer)
 
-    def get_vlb(self):
-        if self._normalizer is None:
-            self.meanfieldupdate() # NOTE: sets self._normalizer
-        return self._normalizer
+    def _init_mf_from_gibbs(self):
+        expected_states = np.eye(self.num_states)[self.stateseq]
+        expected_transcounts = count_transitions(self.stateseq, self.num_states)
+        self.all_expected_stats = \
+            expected_states, expected_transcounts, -np.inf
+
+    def get_vlb(self, most_recently_updated=False):
+        if (self._normalizer is None) or (self._mf_param_snapshot is None) \
+                or not hasattr(self, 'expected_states') \
+                or not hasattr(self, 'expected_transcounts'):
+            self.meanfieldupdate()
+
+        # see https://github.com/mattjj/pyhsmm/issues/45#issuecomment-102721960
+
+        if most_recently_updated:
+            return self._normalizer
+        else:
+            # TODO TODO something wrong in here
+            _, _, new_normalizer = self._expected_statistics(
+                self.mf_trans_matrix, self.mf_pi_0, self.mf_aBl)
+            new_params = np.log(self.mf_trans_matrix), np.log(self.mf_pi_0), \
+                self.mf_aBl
+
+            old_params, old_normalizer = self._mf_param_snapshot[:3], \
+                self._mf_param_snapshot[-1]
+
+            E_stats = self.expected_transcounts, \
+                self.expected_states[0], self.expected_states
+
+            linear_term = \
+                sum(np.dot(np.ravel(a-b), np.ravel(c))
+                    for a, b, c in zip(new_params, old_params, E_stats))
+
+            return linear_term - (new_normalizer - old_normalizer)
 
     def _expected_statistics(self,trans_potential,init_potential,likelihood_log_potential):
         alphal = self._messages_forwards_log(trans_potential,init_potential,
@@ -644,4 +676,3 @@ class HMMStatesPossibleChangepointsSeparateTrans(
         _SeparateTransMixin,
         HMMStatesPossibleChangepoints):
     pass
-
